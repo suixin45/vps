@@ -20,7 +20,6 @@ YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# 短链接自动落地模块
 if [[ "$0" == *"bash"* ]] || [[ "$0" == *"/dev/fd/"* ]]; then
     clear
     echo -e "${CYAN}[*] 正在安装 Suixin VPS 管理工具...${NC}"
@@ -43,6 +42,17 @@ if [[ "$0" == *"bash"* ]] || [[ "$0" == *"/dev/fd/"* ]]; then
         rm -f "$TMP_FILE"
         exit 1
     fi
+fi
+
+if ! command -v iptables >/dev/null 2>&1 || ! command -v bc >/dev/null 2>&1 || ! command -v ss >/dev/null 2>&1; then
+    echo -e "${YELLOW}[!] 缺失基础依赖，正在自动安装...${NC}"
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -y >/dev/null 2>&1 || echo -e "${YELLOW}[!] 软件源更新失败，将尝试继续...${NC}"
+        apt-get install -y iptables bc cron openssl iproute2 >/dev/null 2>&1 || { echo -e "${RED}[!] 依赖安装失败！${NC}"; exit 1; }
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y iptables bc cronie openssl iproute >/dev/null 2>&1 || { echo -e "${RED}[!] 依赖安装失败！${NC}"; exit 1; }
+    fi
+    clear
 fi
 
 # ==================================================
@@ -81,10 +91,11 @@ function show_header() {
     
     if check_installed; then
         get_current_config
-        echo -e " API 服务：${STATUS}             监听端口：${CUR_PORT}"
-        echo -e " API 流量额度：${CUR_LIMIT} GB         API 重置日：每月 ${CUR_DAY} 日"
+        echo -e " API 服务: ${STATUS}               监听端口: ${CUR_PORT}"
+        echo -e " 流量额度: ${CUR_LIMIT} GB               每月重置日: ${CUR_DAY} 日"
     else
-        echo -e " API 服务：${RED}未安装${NC}               监听端口：未设置"
+        echo -e " API 服务: ${RED}未安装${NC}                 监听端口: 未设置"
+        echo -e " 流量额度: 未设置                 每月重置日: 未设置"
     fi
     echo -e "======================================================"
 }
@@ -92,6 +103,9 @@ function show_header() {
 function do_install() {
     echo -e "\n${CYAN}[*] 开始安装 / 重装 API 服务...${NC}"
     
+    # 提前静默停止旧服务，防止配置冲突或端口释放延迟
+    systemctl stop lowsla_api.service >/dev/null 2>&1
+
     DEF_PORT=${CUR_PORT:-45466}
     DEF_TOKEN=${CUR_TOKEN:-2b945047371c4d0c}
     DEF_LIMIT=${CUR_LIMIT:-1000}
@@ -103,14 +117,21 @@ function do_install() {
         echo -e "${RED}[!] 端口必须是 1-65535 的数字！${NC}" && sleep 2 && return
     fi
 
-    read -p " [?] 请输入鉴权 Token [默认 ${DEF_TOKEN}，输入 r 随机生成]: " INPUT_TOKEN
+    # 端口占用防呆检测
+    if command -v ss >/dev/null 2>&1; then
+        if ss -tuln | grep -q ":${PORT} "; then
+            echo -e "${RED}[!] 致命错误：端口 ${PORT} 已被其他程序占用，请更换端口！${NC}"
+            sleep 2
+            return
+        fi
+    fi
+
+    read -p " [?] 请输入鉴权 Token [默认 ${DEF_TOKEN}，输入 r 随机]: " INPUT_TOKEN
     if [ "$INPUT_TOKEN" = "r" ] || [ "$INPUT_TOKEN" = "R" ]; then
         if command -v openssl >/dev/null 2>&1; then
             TOKEN=$(openssl rand -hex 16)
         else
-            echo -e "${RED}[!] 系统未安装 openssl，无法生成随机 Token！${NC}"
-            sleep 2
-            return
+            echo -e "${RED}[!] 系统未安装 openssl，无法生成随机 Token！${NC}" && sleep 2 && return
         fi
     else
         TOKEN=${INPUT_TOKEN:-$DEF_TOKEN}
@@ -133,10 +154,9 @@ function do_install() {
 
     echo -e "\n[*] 正在配置环境..."
     if command -v apt-get >/dev/null 2>&1; then
-        apt-get update -y >/dev/null 2>&1
-        apt-get install -y vnstat python3 curl openssl >/dev/null 2>&1 || { echo -e "${RED}[!] 依赖组件安装失败！${NC}"; exit 1; }
+        apt-get install -y vnstat python3 curl >/dev/null 2>&1 || { echo -e "${RED}[!] 依赖组件安装失败！${NC}"; exit 1; }
     else
-        yum install -y vnstat python3 curl openssl >/dev/null 2>&1 || { echo -e "${RED}[!] 依赖组件安装失败！${NC}"; exit 1; }
+        yum install -y vnstat python3 curl >/dev/null 2>&1 || { echo -e "${RED}[!] 依赖组件安装失败！${NC}"; exit 1; }
     fi
 
     sed -i -E "s/^[#;]*\s*MonthRotate.*/MonthRotate ${RESET_DAY}/g" /etc/vnstat.conf
@@ -157,7 +177,7 @@ try:
     req = urllib.request.Request("http://v4.ident.me", headers={'User-Agent': 'Mozilla/5.0'})
     PUBLIC_IP = urllib.request.urlopen(req, timeout=5).read().decode('utf-8').strip()
 except Exception:
-    PUBLIC_IP = "IP获取中..."
+    PUBLIC_IP = "IP获取失败"
 
 class APIHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -223,8 +243,10 @@ EOF
 
     systemctl daemon-reload
     systemctl enable lowsla_api.service >/dev/null 2>&1
-    if systemctl restart lowsla_api.service; then
-        IPV4=$(curl -s4 v4.ident.me 2>/dev/null)
+    
+    if systemctl start lowsla_api.service; then
+        # 增加超时限制，防止被墙或纯IPv6环境死锁挂起
+        IPV4=$(curl -s4 --max-time 3 v4.ident.me 2>/dev/null || echo "获取失败")
         echo -e "${GREEN}[+] API 服务安装完成！${NC}"
         echo -e "    通信地址: ${YELLOW}http://${IPV4}:${PORT}/api/container/info${NC}"
         echo -e "    鉴权 Token: ${YELLOW}${TOKEN}${NC}"
@@ -244,7 +266,7 @@ function do_test_api() {
     get_current_config
     RESULT=$(curl -s --max-time 3 -H "X-Container-Hash: ${CUR_TOKEN}" http://127.0.0.1:${CUR_PORT})
     if [ -z "$RESULT" ]; then
-        echo -e "${RED}[!] 请求失败！${NC}"
+        echo -e "${RED}[!] 请求失败或服务异常！${NC}"
     else
         echo -e "${GREEN}[+] API 返回结果：${NC}"
         if echo "$RESULT" | grep -q '^{'; then
@@ -297,19 +319,19 @@ function do_uninstall() {
 while true; do
     show_header
     echo -e " API 服务"
-    echo -e "  1. 安装 / 重装 API 服务"
-    echo -e "  2. 测试本地 API"
-    echo -e "  3. 查看 vnStat 流量报表"
-    echo -e "  4. 停止 API 服务"
-    echo -e "  5. 启动 API 服务"
-    echo -e "  6. 卸载 API 服务"
+    echo -e "  1. 部署重装服务"
+    echo -e "  2. 测试本地接口"
+    echo -e "  3. 查看流量报表"
+    echo -e "  4. 停止后台进程"
+    echo -e "  5. 启动后台进程"
+    echo -e "  6. 彻底卸载引擎"
     echo -e ""
     echo -e " 扩展工具"
-    echo -e "  7. 检测 IP 质量"
-    echo -e "  8. 安装 Sing-Box"
-    echo -e "  9. 安装 WARP"
+    echo -e "  7. 测速检测网络"
+    echo -e "  8. 部署代理环境"
+    echo -e "  9. 开启纯净出口"
     echo -e ""
-    echo -e "  0. 退出"
+    echo -e "  0. 退出管理面板"
     echo -e "------------------------------------------------------"
     read -p " 请选择 [0-9]: " OPTION
 
