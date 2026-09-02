@@ -1,17 +1,48 @@
 #!/bin/bash
 
 # ==================================================
-# 变量与颜色定义 (纯净 ANSI 风格)
+# 全局自检与 Suixin 专属环境固化
 # ==================================================
+if [ "$EUID" -ne 0 ]; then
+  echo -e "\033[0;31m[!] 请使用 root 账号执行本程序！\033[0m"
+  exit 1
+fi
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+export DEBIAN_FRONTEND=noninteractive
+
+SCRIPT_BIN="/usr/local/bin/suixin"
+GITHUB_URL="https://raw.githubusercontent.com/suixin45/vps/main/install.sh"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}[!] 错误：请使用 root 权限运行此脚本！${NC}"
-  exit 1
+# 短链接自动落地模块
+if [[ "$0" == *"bash"* ]] || [[ "$0" == *"/dev/fd/"* ]]; then
+    clear
+    echo -e "${CYAN}[*] 正在安装 Suixin VPS 管理工具...${NC}"
+    TMP_FILE=$(mktemp)
+    if curl -fsSL --retry 3 --connect-timeout 10 "$GITHUB_URL" -o "$TMP_FILE"; then
+        if bash -n "$TMP_FILE"; then
+            install -m 0755 "$TMP_FILE" "$SCRIPT_BIN"
+            rm -f "$TMP_FILE"
+            echo -e "${GREEN}[+] 安装完成！随时在终端输入 ${YELLOW}suixin${GREEN} 即可唤出面板！${NC}"
+            sleep 1
+            exec "$SCRIPT_BIN" "$@"
+            exit 0
+        else
+            echo -e "${RED}[!] 下载的代码存在语法错误，更新中止！${NC}"
+            rm -f "$TMP_FILE"
+            exit 1
+        fi
+    else
+        echo -e "${RED}[!] 核心代码拉取失败！${NC}"
+        rm -f "$TMP_FILE"
+        exit 1
+    fi
 fi
 
 # ==================================================
@@ -31,68 +62,86 @@ function get_current_config() {
         CUR_PORT=$(grep "^PORT =" /root/api_server.py | awk '{print $3}')
         CUR_TOKEN=$(grep "^TOKEN =" /root/api_server.py | awk -F '"' '{print $2}')
         CUR_LIMIT=$(grep "^TRAFFIC_LIMIT_GB =" /root/api_server.py | awk '{print $3}')
-        
-        # 提取清零日，兼容各种格式
         CUR_DAY=$(grep -i "MonthRotate" /etc/vnstat.conf 2>/dev/null | grep -oE "[0-9]+" | head -n 1)
         [ -z "$CUR_DAY" ] && CUR_DAY="未知"
         
         if systemctl is-active --quiet lowsla_api.service; then
-            STATUS="${GREEN}[运行中 Active]${NC}"
+            STATUS="${GREEN}运行中${NC}"
         else
-            STATUS="${RED}[已停止 Stopped]${NC}"
+            STATUS="${RED}已停止${NC}"
         fi
     fi
 }
 
 function show_header() {
     clear
-    echo -e "${CYAN}======================================================${NC}"
-    echo -e "${GREEN}      高精度 VPS 综合管理与流量监控系统 (Pro版)       ${NC}"
-    echo -e "${CYAN}======================================================${NC}"
+    echo -e "======================================================"
+    echo -e "                 Suixin VPS 管理工具                  "
+    echo -e "======================================================"
     
     if check_installed; then
         get_current_config
-        echo -e " [*] 核心 API 状态 : ${STATUS}"
-        echo -e " [*] 当前监听端口  : ${YELLOW}${CUR_PORT}${NC}"
-        echo -e " [*] 当前鉴权 Token: ${YELLOW}${CUR_TOKEN}${NC}"
-        echo -e " [*] 当前流量额度  : ${YELLOW}${CUR_LIMIT} GB${NC}"
-        echo -e " [*] 每月清零日期  : ${YELLOW}${CUR_DAY}${NC} 号"
-        echo -e "${CYAN}======================================================${NC}"
+        echo -e " API 服务：${STATUS}             监听端口：${CUR_PORT}"
+        echo -e " API 流量额度：${CUR_LIMIT} GB         API 重置日：每月 ${CUR_DAY} 日"
     else
-        echo -e " [*] 核心 API 状态 : ${RED}未安装${NC}"
-        echo -e "${CYAN}======================================================${NC}"
+        echo -e " API 服务：${RED}未安装${NC}               监听端口：未设置"
     fi
+    echo -e "======================================================"
 }
 
 function do_install() {
-    echo -e "\n${CYAN}[+] 开始配置 / 重装 API 服务...${NC}"
+    echo -e "\n${CYAN}[*] 开始安装 / 重装 API 服务...${NC}"
     
     DEF_PORT=${CUR_PORT:-45466}
     DEF_TOKEN=${CUR_TOKEN:-2b945047371c4d0c}
     DEF_LIMIT=${CUR_LIMIT:-1000}
     DEF_DAY=${CUR_DAY:-1}
 
-    read -p " [+] 请输入 API 监听端口 [默认 ${DEF_PORT}]: " INPUT_PORT
+    read -p " [?] 请输入 API 监听端口 [默认 ${DEF_PORT}]: " INPUT_PORT
     PORT=${INPUT_PORT:-$DEF_PORT}
+    if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+        echo -e "${RED}[!] 端口必须是 1-65535 的数字！${NC}" && sleep 2 && return
+    fi
 
-    read -p " [+] 请输入 API 鉴权 Token [默认 ${DEF_TOKEN}]: " INPUT_TOKEN
-    TOKEN=${INPUT_TOKEN:-$DEF_TOKEN}
+    read -p " [?] 请输入鉴权 Token [默认 ${DEF_TOKEN}，输入 r 随机生成]: " INPUT_TOKEN
+    if [ "$INPUT_TOKEN" = "r" ] || [ "$INPUT_TOKEN" = "R" ]; then
+        if command -v openssl >/dev/null 2>&1; then
+            TOKEN=$(openssl rand -hex 16)
+        else
+            echo -e "${RED}[!] 系统未安装 openssl，无法生成随机 Token！${NC}"
+            sleep 2
+            return
+        fi
+    else
+        TOKEN=${INPUT_TOKEN:-$DEF_TOKEN}
+    fi
+    if ! [[ "$TOKEN" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        echo -e "${RED}[!] Token 仅限字母、数字、下划线和短横线！${NC}" && sleep 2 && return
+    fi
 
-    read -p " [+] 请输入每月总流量额度 (GB) [默认 ${DEF_LIMIT}]: " INPUT_LIMIT
+    read -p " [?] 请输入流量额度 (GB) [默认 ${DEF_LIMIT}]: " INPUT_LIMIT
     LIMIT=${INPUT_LIMIT:-$DEF_LIMIT}
+    if ! [[ "$LIMIT" =~ ^[0-9]+$ ]] || [ "$LIMIT" -lt 1 ]; then
+        echo -e "${RED}[!] 额度必须是大于 0 的整数！${NC}" && sleep 2 && return
+    fi
 
-    read -p " [+] 请输入每月流量清零日 (1-28) [默认 ${DEF_DAY}]: " INPUT_DAY
+    read -p " [?] 请输入自动重置日 (1-28) [默认 ${DEF_DAY}]: " INPUT_DAY
     RESET_DAY=${INPUT_DAY:-$DEF_DAY}
+    if ! [[ "$RESET_DAY" =~ ^[1-9]$|^1[0-9]$|^2[0-8]$ ]]; then
+        echo -e "${RED}[!] 日期必须是 1-28 的数字！${NC}" && sleep 2 && return
+    fi
 
-    echo -e "\n${GREEN} [1/4] 正在安装底层依赖 (vnstat, python3)...${NC}"
-    apt-get update -y >/dev/null 2>&1
-    apt-get install -y vnstat python3 curl >/dev/null 2>&1
+    echo -e "\n[*] 正在配置环境..."
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -y >/dev/null 2>&1
+        apt-get install -y vnstat python3 curl openssl >/dev/null 2>&1 || { echo -e "${RED}[!] 依赖组件安装失败！${NC}"; exit 1; }
+    else
+        yum install -y vnstat python3 curl openssl >/dev/null 2>&1 || { echo -e "${RED}[!] 依赖组件安装失败！${NC}"; exit 1; }
+    fi
 
-    echo -e "${GREEN} [2/4] 正在配置底层账单日为 ${RESET_DAY} 号...${NC}"
     sed -i -E "s/^[#;]*\s*MonthRotate.*/MonthRotate ${RESET_DAY}/g" /etc/vnstat.conf
     systemctl restart vnstat
 
-    echo -e "${GREEN} [3/4] 正在部署高精度 Python API 引擎...${NC}"
     cat << 'EOF' > /root/api_server.py
 import http.server
 import json
@@ -155,7 +204,6 @@ EOF
     sed -i "s/__TOKEN__/${TOKEN}/g" /root/api_server.py
     sed -i "s/__LIMIT__/${LIMIT}/g" /root/api_server.py
 
-    echo -e "${GREEN} [4/4] 正在配置系统守护进程并拉起服务...${NC}"
     cat << 'EOF' > /etc/systemd/system/lowsla_api.service
 [Unit]
 Description=Custom Traffic API Server
@@ -175,73 +223,71 @@ EOF
 
     systemctl daemon-reload
     systemctl enable lowsla_api.service >/dev/null 2>&1
-    systemctl restart lowsla_api.service
-
-    IPV4=$(curl -s4 v4.ident.me)
-    
-    echo -e "\n${GREEN} [+] 流量 API 部署完成！${NC}"
-    echo -e " [+] 请在前端 PHP 将 \$api_url 修改为: ${YELLOW}http://${IPV4}:${PORT}/api/container/info${NC}"
-    echo -n -e "\n 按回车键返回主菜单..."
+    if systemctl restart lowsla_api.service; then
+        IPV4=$(curl -s4 v4.ident.me 2>/dev/null)
+        echo -e "${GREEN}[+] API 服务安装完成！${NC}"
+        echo -e "    通信地址: ${YELLOW}http://${IPV4}:${PORT}/api/container/info${NC}"
+        echo -e "    鉴权 Token: ${YELLOW}${TOKEN}${NC}"
+    else
+        echo -e "${RED}[!] API 服务启动失败！${NC}"
+        exit 1
+    fi
+    echo -n -e "\n请按回车键继续..."
     read
 }
 
 function do_test_api() {
     if ! check_installed; then
-        echo -e "\n${RED} [!] 未安装服务，无法测试！${NC}"
+        echo -e "\n${RED}[!] 未安装 API 服务！${NC}" && sleep 1 && return
+    fi
+    echo -e "\n${CYAN}[*] 正在测试本地 API...${NC}"
+    get_current_config
+    RESULT=$(curl -s --max-time 3 -H "X-Container-Hash: ${CUR_TOKEN}" http://127.0.0.1:${CUR_PORT})
+    if [ -z "$RESULT" ]; then
+        echo -e "${RED}[!] 请求失败！${NC}"
     else
-        echo -e "\n${CYAN} [+] 正在调用本地 API 获取实时数据...${NC}"
-        get_current_config
-        RESULT=$(curl -s --max-time 3 -H "X-Container-Hash: ${CUR_TOKEN}" http://127.0.0.1:${CUR_PORT})
-        if [ -z "$RESULT" ]; then
-            echo -e "${RED} [!] 请求失败或超时，请检查服务状态是否正常。${NC}"
-        else
-            echo -e "${GREEN} [+] API 返回结果：${NC}"
+        echo -e "${GREEN}[+] API 返回结果：${NC}"
+        if echo "$RESULT" | grep -q '^{'; then
             echo "$RESULT" | python3 -m json.tool
+        else
+            echo "$RESULT"
         fi
     fi
-    echo -n -e "\n 按回车键返回主菜单..."
+    echo -n -e "\n请按回车键继续..."
     read
 }
 
 function do_check_vnstat() {
-    echo -e "\n${CYAN} [+] 正在读取并翻译底层物理网卡报表...${NC}\n"
+    echo -e "\n${CYAN}[*] 正在拉取 vnStat 流量报表...${NC}\n"
     if command -v vnstat >/dev/null 2>&1; then
-        # 🟢 独家黑科技：基于中英文字符宽度的像素级等宽对齐替换
         vnstat -m | sed \
             -e 's/   month        rx      /    月份          下行  /g' \
             -e 's/       tx      /      上行     /g' \
             -e 's/    total    /    总计     /g' \
             -e 's/   avg. rate/   平均速率 /g' \
-            -e 's/estimated/本月预估 /g' \
-            -e 's/monthly/月度统计/g'
+            -e 's/estimated/预估消耗 /g' \
+            -e 's/monthly/月统计报表/g'
     else
-        echo -e "${RED} [!] vnstat 未安装，请先执行安装 API 服务。${NC}"
+        echo -e "${RED}[!] 未安装 vnStat！${NC}"
     fi
-    echo -n -e "\n 按回车键返回主菜单..."
+    echo -n -e "\n请按回车键继续..."
     read
 }
 
 function do_uninstall() {
     if ! check_installed; then
-        echo -e "\n${RED} [!] 未检测到安装，无需卸载！${NC}"
-    else
-        read -p " [?] 确定要彻底卸载流量监控 API 吗？[y/N]: " UNINSTALL_CONFIRM
-        if [[ "$UNINSTALL_CONFIRM" =~ ^[Yy]$ ]]; then
-            echo -e "\n${YELLOW} [-] 正在停止并移除服务...${NC}"
-            systemctl stop lowsla_api.service >/dev/null 2>&1
-            systemctl disable lowsla_api.service >/dev/null 2>&1
-            rm -f /etc/systemd/system/lowsla_api.service
-            systemctl daemon-reload
-            
-            echo -e "${YELLOW} [-] 正在删除核心脚本...${NC}"
-            rm -f /root/api_server.py
-            
-            echo -e "${GREEN} [+] 卸载完成！(底层 vnstat 保留以备他用)${NC}"
-        else
-            echo -e "${GREEN} [*] 已取消卸载。${NC}"
-        fi
+        echo -e "\n${RED}[!] 未安装 API 服务！${NC}" && sleep 1 && return
     fi
-    echo -n -e "\n 按回车键返回主菜单..."
+    read -p " [?] 确定卸载 API 服务？[y/N]: " UNINSTALL_CONFIRM
+    if [[ "$UNINSTALL_CONFIRM" =~ ^[Yy]$ ]]; then
+        systemctl stop lowsla_api.service >/dev/null 2>&1
+        systemctl disable lowsla_api.service >/dev/null 2>&1
+        rm -f /etc/systemd/system/lowsla_api.service
+        systemctl daemon-reload
+        rm -f /root/api_server.py
+        echo -e "${GREEN}[+] 卸载完成！${NC}"
+    fi
+    echo -n -e "\n请按回车键继续..."
     read
 }
 
@@ -250,53 +296,61 @@ function do_uninstall() {
 # ==================================================
 while true; do
     show_header
-    echo -e " ${CYAN}--- 本地服务管理 ---${NC}"
-    echo -e "  ${GREEN}1.${NC} 部署重装 API 接口"
-    echo -e "  ${GREEN}2.${NC} 本地测试 API 数据"
-    echo -e "  ${GREEN}3.${NC} 查看本地流量报表 "
-    echo -e "  ${GREEN}4.${NC} 停止后台 API 进程"
-    echo -e "  ${GREEN}5.${NC} 启动后台 API 进程"
-    echo -e "  ${GREEN}6.${NC} 彻底卸载 API 服务"
+    echo -e " API 服务"
+    echo -e "  1. 安装 / 重装 API 服务"
+    echo -e "  2. 测试本地 API"
+    echo -e "  3. 查看 vnStat 流量报表"
+    echo -e "  4. 停止 API 服务"
+    echo -e "  5. 启动 API 服务"
+    echo -e "  6. 卸载 API 服务"
     echo -e ""
-    echo -e " ${CYAN}--- 极客专属扩展 ---${NC}"
-    echo -e "  ${GREEN}7.${NC} 测速检测 IP 质量 "
-    echo -e "  ${GREEN}8.${NC} 一键部署 Sing-Box"
-    echo -e "  ${GREEN}9.${NC} 开启 WARP 纯净 IP"
+    echo -e " 扩展工具"
+    echo -e "  7. 检测 IP 质量"
+    echo -e "  8. 安装 Sing-Box"
+    echo -e "  9. 安装 WARP"
     echo -e ""
-    echo -e "  ${GREEN}0.${NC} 退出综合管理脚本 "
-    echo -e "${CYAN}======================================================${NC}"
-    read -p " 请输入选项 [0-9]: " OPTION
+    echo -e "  0. 退出"
+    echo -e "------------------------------------------------------"
+    read -p " 请选择 [0-9]: " OPTION
 
     case $OPTION in
         1) do_install ;;
         2) do_test_api ;;
         3) do_check_vnstat ;;
         4) 
-            systemctl stop lowsla_api.service >/dev/null 2>&1
-            echo -e "${GREEN} [*] 服务已停止！${NC}"; sleep 1 ;;
+            if systemctl stop lowsla_api.service >/dev/null 2>&1; then
+                echo -e "${GREEN}[+] API 服务已停止！${NC}"
+            else
+                echo -e "${RED}[!] API 服务停止失败！${NC}"
+            fi
+            sleep 1 ;;
         5) 
-            systemctl start lowsla_api.service >/dev/null 2>&1
-            echo -e "${GREEN} [*] 服务已启动！${NC}"; sleep 1 ;;
+            if systemctl start lowsla_api.service >/dev/null 2>&1; then
+                echo -e "${GREEN}[+] API 服务已启动！${NC}"
+            else
+                echo -e "${RED}[!] API 服务启动失败！${NC}"
+            fi
+            sleep 1 ;;
         6) do_uninstall ;;
         7) 
-            echo -e "\n${CYAN} [>] 正在启动 IP 质量检测 (Check.Place)...${NC}"
+            echo -e "\n${CYAN}[*] 正在启动 IP 质量检测 (Check.Place)...${NC}"
             bash <(curl -Ls https://Check.Place) -I
-            echo -n -e "\n 按回车键返回主菜单..."
+            echo -n -e "\n请按回车键继续..."
             read
             ;;
         8) 
-            echo -e "\n${CYAN} [>] 正在拉取 sing-box 一键安装脚本...${NC}"
+            echo -e "\n${CYAN}[*] 正在安装 Sing-Box...${NC}"
             bash <(wget -qO- -o- https://github.com/233boy/sing-box/raw/main/install.sh)
-            echo -n -e "\n 按回车键返回主菜单..."
+            echo -n -e "\n请按回车键继续..."
             read
             ;;
         9) 
-            echo -e "\n${CYAN} [>] 正在执行 WARP 一键开启脚本...${NC}"
+            echo -e "\n${CYAN}[*] 正在安装 WARP...${NC}"
             bash <(curl -fsSL https://vpszdm.com/warp-google.sh)
-            echo -n -e "\n 按回车键返回主菜单..."
+            echo -n -e "\n请按回车键继续..."
             read
             ;;
-        0) clear; echo -e "${GREEN} [*] 感谢使用，老板再见！${NC}"; exit 0 ;;
-        *) echo -e "${RED} [!] 无效选项，请重新输入！${NC}"; sleep 1 ;;
+        0) clear; echo -e "${GREEN}[+] 已退出 Suixin${NC}"; exit 0 ;;
+        *) echo -e "${RED}[!] 无效选项，请重新输入！${NC}"; sleep 1 ;;
     esac
 done
