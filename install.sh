@@ -317,6 +317,125 @@ function do_uninstall() {
     read
 }
 
+function do_batch_add_nodes() {
+    local sb_bin choice date_md date_number scheme1_port_base scheme2_port_base
+    local scheme_base port_base work_dir label protocol port log_file clean_file url
+    local success_count=0
+    local failure_count=0
+    local i result status detail add_status
+    local -a labels protocols results
+
+    if command -v sb >/dev/null 2>&1; then
+        sb_bin="$(command -v sb)"
+    elif [ -f /etc/sing-box/sh/sing-box.sh ]; then
+        sb_bin="/etc/sing-box/sh/sing-box.sh"
+    else
+        echo -e "\n${RED}[!] 找不到 233boy Sing-box 管理脚本，请先运行第 10 项安装。${NC}"
+        echo -n -e "\n请按回车键继续..."
+        read
+        return
+    fi
+
+    date_md="$(date +%m%d)"
+    date_number=$((10#$date_md))
+    scheme1_port_base=$((40000 + date_number * 10))
+    scheme2_port_base=$((20000 + date_number * 10))
+
+    clear
+    echo -e "${CYAN}请选择批量创建方案（今日 $(date +%m-%d)）：${NC}"
+    echo
+    echo "方案一（4条）                 | 方案二（2条）"
+    echo "-----------------------------|--------------------------"
+    printf '  %-26s | %s\n' "TUIC  $((scheme1_port_base + 1))" "Hysteria2  $((scheme2_port_base + 1))"
+    printf '  %-26s | %s\n' "Hysteria2  $((scheme1_port_base + 2))" "VLESS-REALITY  $((scheme2_port_base + 2))"
+    printf '  %-26s |\n' "VLESS-REALITY  $((scheme1_port_base + 3))"
+    printf '  %-26s |\n' "VLESS-HTTP2-REALITY  $((scheme1_port_base + 4))"
+    echo
+    read -p "请输入 [1-2，回车返回]: " choice
+
+    case "$choice" in
+        1)
+            labels=("TUIC" "Hysteria2" "VLESS-REALITY" "VLESS-HTTP2-REALITY")
+            protocols=("tuic" "hy" "reality" "rh2")
+            scheme_base=40000
+            ;;
+        2)
+            labels=("Hysteria2" "VLESS-REALITY")
+            protocols=("hy" "reality")
+            scheme_base=20000
+            ;;
+        "") return ;;
+        *)
+            echo -e "${RED}[!] 方案只能是 1 或 2。${NC}"
+            sleep 1
+            return
+            ;;
+    esac
+
+    port_base=$((scheme_base + date_number * 10))
+    work_dir="$(mktemp -d /tmp/suixin-sb-add.XXXXXX)" || {
+        echo -e "${RED}[!] 无法创建临时目录。${NC}"
+        sleep 1
+        return
+    }
+
+    echo
+    echo -e "${CYAN}[*] 即将创建 ${#protocols[@]} 条节点，端口范围 $((port_base + 1))-$((port_base + ${#protocols[@]}))。${NC}"
+
+    for i in "${!protocols[@]}"; do
+        label="${labels[$i]}"
+        protocol="${protocols[$i]}"
+        port=$((port_base + i + 1))
+        log_file="$work_dir/$i.log"
+
+        echo
+        echo -e "${CYAN}[$((i + 1))/${#protocols[@]}] 正在创建 $label，端口 $port ...${NC}"
+
+        if command -v ss >/dev/null 2>&1 && ss -H -lntu 2>/dev/null | grep -Eq "[:.]${port}[[:space:]]"; then
+            echo -e "${RED}[失败] 端口 $port 已被占用，未创建 $label。${NC}"
+            results+=("[失败] $label（端口 $port）|端口已被占用")
+            failure_count=$((failure_count + 1))
+            continue
+        fi
+
+        "$sb_bin" add "$protocol" "$port" >"$log_file" 2>&1
+        add_status=$?
+        cat "$log_file"
+
+        if [ "$add_status" -eq 0 ]; then
+            clean_file="$work_dir/$i.clean.log"
+            sed -E $'s/\x1B\[[0-9;?]*[ -\/]*[@-~]//g' "$log_file" > "$clean_file"
+            url="$(grep -Eo '(tuic|hysteria2|hy2|vless)://[^[:space:]]+' "$clean_file" | tail -n 1 || true)"
+
+            if [ -n "$url" ]; then
+                results+=("[成功] $label（端口 $port）|$url")
+            else
+                results+=("[成功] $label（端口 $port）|已创建，但未能提取链接；请运行 sb info 查看")
+            fi
+            success_count=$((success_count + 1))
+        else
+            results+=("[失败] $label（端口 $port）|创建命令执行失败，请查看上方输出")
+            failure_count=$((failure_count + 1))
+        fi
+    done
+
+    echo
+    echo "================ 新建节点汇总 ================"
+    for result in "${results[@]}"; do
+        status="${result%%|*}"
+        detail="${result#*|}"
+        echo "$status"
+        echo "$detail"
+        echo
+    done
+    echo "成功: $success_count，失败: $failure_count"
+    echo "==============================================="
+
+    rm -rf -- "$work_dir"
+    echo -n -e "\n请按回车键继续..."
+    read
+}
+
 # ==================================================
 # 主程序循环
 # ==================================================
@@ -335,11 +454,12 @@ while true; do
     echo -e " 网络工具"
     echo -e "  9. 检测 IP 质量"
     echo -e " 10. 安装 Sing-box"
-    echo -e " 11. 安装 WARP"
+    echo -e " 11. 批量创建 Sing-box 节点"
+    echo -e " 12. 安装 WARP"
     echo -e ""
     echo -e "  0. 退出"
     echo -e "------------------------------------------------------"
-    read -p " 请选择功能 [0-11]: " OPTION
+    read -p " 请选择功能 [0-12]: " OPTION
 
     case $OPTION in
         1) do_install ;;
@@ -366,7 +486,8 @@ while true; do
             bash <(wget -qO- -o- https://github.com/233boy/sing-box/raw/main/install.sh)
             echo -n -e "\n请按回车键继续..."
             read ;;
-        11) 
+        11) do_batch_add_nodes ;;
+        12) 
             echo -e "\n${CYAN}[*] 正在拉取 WARP...${NC}"
             bash <(curl -fsSL https://vpszdm.com/warp-google.sh)
             echo -n -e "\n请按回车键继续..."
