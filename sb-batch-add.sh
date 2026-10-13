@@ -3,7 +3,8 @@
 # Batch-create nodes with the 233boy/sing-box management script.
 # Scheme 1: TUIC + Hysteria2 + VLESS-REALITY + VLESS-HTTP2-REALITY
 # Scheme 2: Hysteria2 + VLESS-REALITY
-# Port rule: 20000 + MMDD * 10 + sequence number (1-4)
+# Port rule: 20000 + MMDD * 10 + fixed slot
+# Scheme 1 uses slots 1-4; scheme 2 uses slots 5-6 to avoid same-day conflicts.
 
 set -uo pipefail
 
@@ -33,10 +34,12 @@ case "$choice" in
   1)
     labels=("TUIC" "Hysteria2" "VLESS-REALITY" "VLESS-HTTP2-REALITY")
     protocols=("tuic" "hy" "reality" "rh2")
+    slot_start=1
     ;;
   2)
     labels=("Hysteria2" "VLESS-REALITY")
     protocols=("hy" "reality")
+    slot_start=5
     ;;
   *)
     echo "[错误] 方案只能是 1 或 2。" >&2
@@ -56,13 +59,13 @@ port_base=$((20000 + date_number * 10))
 
 echo
 echo "即将创建 ${#protocols[@]} 条节点。"
-echo "今日日期: $(date +%m-%d)，端口范围: $((port_base + 1))-$((port_base + ${#protocols[@]}))"
+echo "今日日期: $(date +%m-%d)，端口范围: $((port_base + slot_start))-$((port_base + slot_start + ${#protocols[@]} - 1))"
 echo "认证信息仍由 sb 自动生成。"
 
 for i in "${!protocols[@]}"; do
   label="${labels[$i]}"
   protocol="${protocols[$i]}"
-  port=$((port_base + i + 1))
+  port=$((port_base + slot_start + i))
   log_file="$work_dir/$i.log"
 
   echo
