@@ -12,6 +12,9 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 export DEBIAN_FRONTEND=noninteractive
 
 SCRIPT_BIN="/usr/local/bin/suixin"
+SCRIPT_SHORT_BIN="/usr/local/bin/sx"
+SCRIPT_FALLBACK_BIN="/usr/bin/suixin"
+SCRIPT_SHORT_FALLBACK_BIN="/usr/bin/sx"
 GITHUB_URL="https://raw.githubusercontent.com/suixin45/vps/main/install.sh"
 
 RED='\033[0;31m'
@@ -27,8 +30,12 @@ if [[ "$0" == *"bash"* ]] || [[ "$0" == *"/dev/fd/"* ]]; then
     if curl -fsSL --retry 3 --connect-timeout 10 "$GITHUB_URL" -o "$TMP_FILE"; then
         if bash -n "$TMP_FILE"; then
             install -m 0755 "$TMP_FILE" "$SCRIPT_BIN"
+            ln -sfn "$SCRIPT_BIN" "$SCRIPT_SHORT_BIN"
+            ln -sfn "$SCRIPT_BIN" "$SCRIPT_FALLBACK_BIN"
+            ln -sfn "$SCRIPT_BIN" "$SCRIPT_SHORT_FALLBACK_BIN"
             rm -f "$TMP_FILE"
-            echo -e "${GREEN}[+] 安装完成！随时在终端输入 ${YELLOW}suixin${GREEN} 即可唤出面板！${NC}"
+            hash -r 2>/dev/null || true
+            echo -e "${GREEN}[+] 安装完成！输入 ${YELLOW}suixin${GREEN} 或 ${YELLOW}sx${GREEN} 即可唤出面板！${NC}"
             sleep 1
             exec "$SCRIPT_BIN" "$@"
             exit 0
@@ -42,6 +49,15 @@ if [[ "$0" == *"bash"* ]] || [[ "$0" == *"/dev/fd/"* ]]; then
         rm -f "$TMP_FILE"
         exit 1
     fi
+fi
+
+# 正常启动时自动修复短命令入口，确保更新或重启后仍可使用 sx。
+if [ -x "$SCRIPT_BIN" ] && { [ ! -L "$SCRIPT_SHORT_BIN" ] || [ "$(readlink -f "$SCRIPT_SHORT_BIN" 2>/dev/null)" != "$SCRIPT_BIN" ]; }; then
+    ln -sfn "$SCRIPT_BIN" "$SCRIPT_SHORT_BIN" 2>/dev/null || true
+fi
+if [ -x "$SCRIPT_BIN" ]; then
+    ln -sfn "$SCRIPT_BIN" "$SCRIPT_FALLBACK_BIN" 2>/dev/null || true
+    ln -sfn "$SCRIPT_BIN" "$SCRIPT_SHORT_FALLBACK_BIN" 2>/dev/null || true
 fi
 
 if ! command -v vnstat >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
