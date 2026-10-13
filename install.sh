@@ -339,6 +339,7 @@ function do_batch_add_nodes() {
     local success_count=0
     local failure_count=0
     local i result status detail add_status
+    local lookup_port encoded slot mmdd month day max_day lookup_scheme lookup_protocol
     local -a labels protocols results
 
     if command -v sb >/dev/null 2>&1; then
@@ -358,7 +359,7 @@ function do_batch_add_nodes() {
     scheme2_port_base=$((20000 + date_number * 10))
 
     clear
-    echo -e "${CYAN}请选择批量创建方案（今日 $(date +%m-%d)）：${NC}"
+    echo -e "${CYAN}请选择 Sing-box 功能（今日 $(date +%m-%d)）：${NC}"
     echo
     echo "[1] 方案一（4条）"
     printf '    %-24s %s\n' "TUIC" "$((scheme1_port_base + 1))"
@@ -370,7 +371,77 @@ function do_batch_add_nodes() {
     printf '    %-24s %s\n' "Hysteria2" "$((scheme2_port_base + 1))"
     printf '    %-24s %s\n' "VLESS-REALITY" "$((scheme2_port_base + 2))"
     echo
-    read -p "请输入 [1-2，回车返回]: " choice
+    echo "[3] 端口反查"
+    echo "    查询创建日期、方案和协议"
+    echo
+    read -p "请输入 [1-3，回车返回]: " choice
+
+    if [ "$choice" = "3" ]; then
+        read -p "请输入节点端口号: " lookup_port
+        if ! [[ "$lookup_port" =~ ^[0-9]+$ ]] || [ "$lookup_port" -lt 10000 ] || [ "$lookup_port" -gt 65535 ]; then
+            echo -e "${RED}[!] 请输入 10000-65535 范围内的端口号。${NC}"
+            echo -n -e "\n请按回车键继续..."
+            read
+            return
+        fi
+
+        lookup_scheme=""
+        lookup_protocol=""
+
+        if [ "$lookup_port" -ge 40000 ]; then
+            encoded=$((10#$lookup_port - 40000))
+            slot=$((encoded % 10))
+            mmdd=$((encoded / 10))
+            lookup_scheme="方案一"
+            case "$slot" in
+                1) lookup_protocol="TUIC" ;;
+                2) lookup_protocol="Hysteria2" ;;
+                3) lookup_protocol="VLESS-REALITY" ;;
+                4) lookup_protocol="VLESS-HTTP2-REALITY" ;;
+                *) lookup_scheme="" ;;
+            esac
+        elif [ "$lookup_port" -ge 20000 ]; then
+            encoded=$((10#$lookup_port - 20000))
+            slot=$((encoded % 10))
+            mmdd=$((encoded / 10))
+            lookup_scheme="方案二"
+            case "$slot" in
+                1) lookup_protocol="Hysteria2" ;;
+                2) lookup_protocol="VLESS-REALITY" ;;
+                *) lookup_scheme="" ;;
+            esac
+        fi
+
+        if [ -n "$lookup_scheme" ]; then
+            month=$((mmdd / 100))
+            day=$((mmdd % 100))
+            case "$month" in
+                1|3|5|7|8|10|12) max_day=31 ;;
+                4|6|9|11) max_day=30 ;;
+                2) max_day=29 ;;
+                *) max_day=0 ;;
+            esac
+            if [ "$day" -lt 1 ] || [ "$day" -gt "$max_day" ]; then
+                lookup_scheme=""
+            fi
+        fi
+
+        if [ -z "$lookup_scheme" ]; then
+            echo -e "\n${RED}[!] 端口 $lookup_port 不符合当前 Sing-box 端口编码规则。${NC}"
+        else
+            echo
+            echo "--------------- 端口反查结果 ---------------"
+            echo "端口：$lookup_port"
+            printf '创建日期：%02d月%02d日\n' "$month" "$day"
+            echo "创建方案：$lookup_scheme"
+            echo "节点协议：$lookup_protocol"
+            echo "说明：端口未编码年份和具体时分，无法继续还原。"
+            echo "--------------------------------------------"
+        fi
+        echo -n -e "\n请按回车键继续..."
+        read
+        return
+    fi
 
     case "$choice" in
         1)
@@ -385,7 +456,7 @@ function do_batch_add_nodes() {
             ;;
         "") return ;;
         *)
-            echo -e "${RED}[!] 方案只能是 1 或 2。${NC}"
+            echo -e "${RED}[!] 请选择 1、2 或 3。${NC}"
             sleep 1
             return
             ;;
