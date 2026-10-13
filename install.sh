@@ -344,12 +344,15 @@ function do_batch_add_nodes() {
     clear
     echo -e "${CYAN}请选择批量创建方案（今日 $(date +%m-%d)）：${NC}"
     echo
-    echo "方案一（4条）                 | 方案二（2条）"
-    echo "-----------------------------|--------------------------"
-    printf '  %-26s | %s\n' "TUIC  $((scheme1_port_base + 1))" "Hysteria2  $((scheme2_port_base + 1))"
-    printf '  %-26s | %s\n' "Hysteria2  $((scheme1_port_base + 2))" "VLESS-REALITY  $((scheme2_port_base + 2))"
-    printf '  %-26s |\n' "VLESS-REALITY  $((scheme1_port_base + 3))"
-    printf '  %-26s |\n' "VLESS-HTTP2-REALITY  $((scheme1_port_base + 4))"
+    echo "[1] 方案一（4条）"
+    printf '    %-24s %s\n' "TUIC" "$((scheme1_port_base + 1))"
+    printf '    %-24s %s\n' "Hysteria2" "$((scheme1_port_base + 2))"
+    printf '    %-24s %s\n' "VLESS-REALITY" "$((scheme1_port_base + 3))"
+    printf '    %-24s %s\n' "VLESS-HTTP2-REALITY" "$((scheme1_port_base + 4))"
+    echo
+    echo "[2] 方案二（2条）"
+    printf '    %-24s %s\n' "Hysteria2" "$((scheme2_port_base + 1))"
+    printf '    %-24s %s\n' "VLESS-REALITY" "$((scheme2_port_base + 2))"
     echo
     read -p "请输入 [1-2，回车返回]: " choice
 
@@ -454,7 +457,7 @@ while true; do
     echo -e " 网络工具"
     echo -e "  9. 检测 IP 质量"
     echo -e " 10. 安装 Sing-box"
-    echo -e " 11. 批量创建 Sing-box 节点"
+    echo -e " 11. 创建 Sing-box"
     echo -e " 12. 安装 WARP"
     echo -e ""
     echo -e "  0. 退出"
