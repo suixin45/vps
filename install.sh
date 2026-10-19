@@ -340,7 +340,9 @@ function do_batch_add_nodes() {
     local failure_count=0
     local i result status detail add_status
     local lookup_port encoded slot mmdd month day max_day lookup_scheme lookup_protocol
-    local -a labels protocols results
+    local lookup_prompt group_base candidate_port config_file node_output node_url copy_text encoded_copy
+    local found_count copy_count group_i
+    local -a labels protocols results group_labels group_ports
 
     if command -v sb >/dev/null 2>&1; then
         sb_bin="$(command -v sb)"
@@ -372,75 +374,144 @@ function do_batch_add_nodes() {
     printf '    %-24s %s\n' "VLESS-REALITY" "$((scheme2_port_base + 2))"
     echo
     echo "[3] 端口反查"
-    echo "    查询创建日期、方案和协议"
+    echo "    查询日期、方案和现有节点"
     echo
     read -p "请输入 [1-3，回车返回]: " choice
 
     if [ "$choice" = "3" ]; then
-        read -p "请输入节点端口号: " lookup_port
-        if ! [[ "$lookup_port" =~ ^[0-9]+$ ]] || [ "$lookup_port" -lt 10000 ] || [ "$lookup_port" -gt 65535 ]; then
-            echo -e "${RED}[!] 请输入 10000-65535 范围内的端口号。${NC}"
-            echo -n -e "\n请按回车键继续..."
-            read
-            return
-        fi
+        echo
+        echo "========== Sing-box 端口反查 =========="
+        echo "输入端口号进行查询，直接回车返回上级菜单。"
+        lookup_prompt="请输入节点端口号（回车返回）: "
+        copy_text=""
 
-        lookup_scheme=""
-        lookup_protocol=""
+        while true; do
+            read -p "$lookup_prompt" lookup_port
+            [ -z "$lookup_port" ] && return
 
-        if [ "$lookup_port" -ge 40000 ]; then
-            encoded=$((10#$lookup_port - 40000))
-            slot=$((encoded % 10))
-            mmdd=$((encoded / 10))
-            lookup_scheme="方案一"
-            case "$slot" in
-                1) lookup_protocol="TUIC" ;;
-                2) lookup_protocol="Hysteria2" ;;
-                3) lookup_protocol="VLESS-REALITY" ;;
-                4) lookup_protocol="VLESS-HTTP2-REALITY" ;;
-                *) lookup_scheme="" ;;
-            esac
-        elif [ "$lookup_port" -ge 20000 ]; then
-            encoded=$((10#$lookup_port - 20000))
-            slot=$((encoded % 10))
-            mmdd=$((encoded / 10))
-            lookup_scheme="方案二"
-            case "$slot" in
-                1) lookup_protocol="Hysteria2" ;;
-                2) lookup_protocol="VLESS-REALITY" ;;
-                *) lookup_scheme="" ;;
-            esac
-        fi
-
-        if [ -n "$lookup_scheme" ]; then
-            month=$((mmdd / 100))
-            day=$((mmdd % 100))
-            case "$month" in
-                1|3|5|7|8|10|12) max_day=31 ;;
-                4|6|9|11) max_day=30 ;;
-                2) max_day=29 ;;
-                *) max_day=0 ;;
-            esac
-            if [ "$day" -lt 1 ] || [ "$day" -gt "$max_day" ]; then
-                lookup_scheme=""
+            if [[ "$lookup_port" =~ ^[Cc]$ ]]; then
+                if [ -z "$copy_text" ]; then
+                    echo -e "${YELLOW}[!] 当前没有可复制的节点链接。${NC}"
+                else
+                    if command -v base64 >/dev/null 2>&1; then
+                        encoded_copy="$(printf '%s' "$copy_text" | base64 | tr -d '\r\n')"
+                        printf '\033]52;c;%s\a' "$encoded_copy"
+                        echo -e "${GREEN}[+] 已向 SSH 终端发送剪贴板复制指令。${NC}"
+                    else
+                        echo -e "${YELLOW}[!] 系统缺少 base64，无法发送剪贴板复制指令。${NC}"
+                    fi
+                    echo "若终端不支持远程剪贴板，请手动复制以下内容："
+                    printf '%s' "$copy_text"
+                fi
+                echo
+                lookup_prompt="请输入下一个端口号（回车返回）: "
+                continue
             fi
-        fi
 
-        if [ -z "$lookup_scheme" ]; then
-            echo -e "\n${RED}[!] 端口 $lookup_port 不符合当前 Sing-box 端口编码规则。${NC}"
-        else
+            if ! [[ "$lookup_port" =~ ^[0-9]+$ ]] || [ "$lookup_port" -lt 10000 ] || [ "$lookup_port" -gt 65535 ]; then
+                echo -e "${RED}[!] 请输入 10000-65535 范围内的端口号。${NC}"
+                lookup_prompt="请输入下一个端口号（回车返回）: "
+                continue
+            fi
+
+            lookup_scheme=""
+            lookup_protocol=""
+            group_labels=()
+            group_ports=()
+            copy_text=""
+            found_count=0
+            copy_count=0
+
+            if [ "$lookup_port" -ge 40000 ]; then
+                encoded=$((10#$lookup_port - 40000))
+                slot=$((encoded % 10))
+                mmdd=$((encoded / 10))
+                lookup_scheme="方案一"
+                group_base=$((40000 + mmdd * 10))
+                group_labels=("TUIC" "Hysteria2" "VLESS-REALITY" "VLESS-HTTP2-REALITY")
+                group_ports=($((group_base + 1)) $((group_base + 2)) $((group_base + 3)) $((group_base + 4)))
+                case "$slot" in
+                    1) lookup_protocol="TUIC" ;;
+                    2) lookup_protocol="Hysteria2" ;;
+                    3) lookup_protocol="VLESS-REALITY" ;;
+                    4) lookup_protocol="VLESS-HTTP2-REALITY" ;;
+                    *) lookup_scheme="" ;;
+                esac
+            elif [ "$lookup_port" -ge 20000 ]; then
+                encoded=$((10#$lookup_port - 20000))
+                slot=$((encoded % 10))
+                mmdd=$((encoded / 10))
+                lookup_scheme="方案二"
+                group_base=$((20000 + mmdd * 10))
+                group_labels=("Hysteria2" "VLESS-REALITY")
+                group_ports=($((group_base + 1)) $((group_base + 2)))
+                case "$slot" in
+                    1) lookup_protocol="Hysteria2" ;;
+                    2) lookup_protocol="VLESS-REALITY" ;;
+                    *) lookup_scheme="" ;;
+                esac
+            fi
+
+            if [ -n "$lookup_scheme" ]; then
+                month=$((mmdd / 100))
+                day=$((mmdd % 100))
+                case "$month" in
+                    1|3|5|7|8|10|12) max_day=31 ;;
+                    4|6|9|11) max_day=30 ;;
+                    2) max_day=29 ;;
+                    *) max_day=0 ;;
+                esac
+                if [ "$day" -lt 1 ] || [ "$day" -gt "$max_day" ]; then
+                    lookup_scheme=""
+                fi
+            fi
+
+            if [ -z "$lookup_scheme" ]; then
+                echo -e "\n${RED}[!] 端口 $lookup_port 不符合当前 Sing-box 端口编码规则。${NC}"
+                lookup_prompt="请输入下一个端口号（回车返回）: "
+                continue
+            fi
+
             echo
             echo "--------------- 端口反查结果 ---------------"
-            echo "端口：$lookup_port"
+            echo "查询端口：$lookup_port"
             printf '创建日期：%02d月%02d日\n' "$month" "$day"
             echo "创建方案：$lookup_scheme"
             echo "节点协议：$lookup_protocol"
+            echo
+            echo "同方案已存在节点："
+
+            for group_i in "${!group_ports[@]}"; do
+                candidate_port="${group_ports[$group_i]}"
+                config_file="$(find /etc/sing-box/conf -maxdepth 1 -type f -name "*-${candidate_port}.json" -print -quit 2>/dev/null)"
+                [ -z "$config_file" ] && continue
+
+                found_count=$((found_count + 1))
+                printf '  %d. %-24s %s\n' "$found_count" "${group_labels[$group_i]}" "$candidate_port"
+
+                node_output="$("$sb_bin" url "$candidate_port" </dev/null 2>/dev/null || true)"
+                node_url="$(printf '%s\n' "$node_output" | sed -E $'s/\x1B\[[0-9;?]*[ -\/]*[@-~]//g' | grep -Eo '(tuic|hysteria2|hy2|vless)://[^[:space:]]+' | tail -n 1 || true)"
+                if [ -n "$node_url" ]; then
+                    copy_text+="$node_url"$'\n'
+                    copy_count=$((copy_count + 1))
+                fi
+            done
+
+            if [ "$found_count" -eq 0 ]; then
+                echo "  未找到该方案现存的配置文件。"
+            else
+                echo
+                echo "共找到 $found_count 条现有配置，可复制 $copy_count 条节点链接。"
+            fi
             echo "说明：端口未编码年份和具体时分，无法继续还原。"
             echo "--------------------------------------------"
-        fi
-        echo -n -e "\n请按回车键继续..."
-        read
-        return
+
+            if [ "$copy_count" -gt 0 ]; then
+                lookup_prompt="输入 C 复制本方案节点，或输入下一个端口号（回车返回）: "
+            else
+                lookup_prompt="请输入下一个端口号（回车返回）: "
+            fi
+        done
     fi
 
     case "$choice" in
