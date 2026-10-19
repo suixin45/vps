@@ -333,6 +333,246 @@ function do_uninstall() {
     read
 }
 
+function copy_singbox_links() {
+    local copy_data="$1"
+    local encoded_data
+
+    if [ -z "$copy_data" ]; then
+        echo -e "${YELLOW}[!] 没有可复制的节点链接。${NC}"
+        return
+    fi
+
+    if command -v base64 >/dev/null 2>&1; then
+        encoded_data="$(printf '%s' "$copy_data" | base64 | tr -d '\r\n')"
+        printf '\033]52;c;%s\a' "$encoded_data"
+        echo -e "${GREEN}[+] 已向 SSH 终端发送剪贴板复制指令。${NC}"
+    else
+        echo -e "${YELLOW}[!] 系统缺少 base64，无法发送剪贴板复制指令。${NC}"
+    fi
+    echo "若终端不支持远程剪贴板，请手动复制以下内容："
+    printf '%s' "$copy_data"
+}
+
+function do_query_singbox_nodes() {
+    local sb_bin="$1"
+    local file base port label protocol node_output node_url encoded slot mmdd month day max_day
+    local scheme expected_label group_key group_title group_choice copy_data outside_copy all_copy
+    local i j found expected group_number outside_count=0 total_count=0
+    local -a node_ports node_labels node_urls node_groups group_order numbered_groups
+    local -A group_seen group_slots group_counts group_expected
+
+    if ! command -v jq >/dev/null 2>&1; then
+        echo -e "${RED}[!] 缺少 jq，无法读取 Sing-box 配置。${NC}"
+        echo -n -e "\n请按回车键继续..."
+        read
+        return
+    fi
+
+    if [ ! -d /etc/sing-box/conf ]; then
+        echo -e "${RED}[!] 找不到 /etc/sing-box/conf，请先安装 Sing-box。${NC}"
+        echo -n -e "\n请按回车键继续..."
+        read
+        return
+    fi
+
+    for file in /etc/sing-box/conf/*.json; do
+        [ -f "$file" ] || continue
+        port="$(jq -r '.inbounds[0].listen_port // empty' "$file" 2>/dev/null)"
+        [[ "$port" =~ ^[0-9]+$ ]] || continue
+
+        base="${file##*/}"
+        label="${base%-$port.json}"
+        protocol="$(jq -r '.inbounds[0].type // empty' "$file" 2>/dev/null)"
+        [ "$label" = "$base" ] && label="${protocol:-未知协议}"
+
+        scheme=""
+        expected_label=""
+        group_key="outside"
+
+        if [ "$port" -ge 40000 ]; then
+            encoded=$((10#$port - 40000))
+            slot=$((encoded % 10))
+            mmdd=$((encoded / 10))
+            scheme="方案一"
+            case "$slot" in
+                1) expected_label="TUIC" ;;
+                2) expected_label="Hysteria2" ;;
+                3) expected_label="VLESS-REALITY" ;;
+                4) expected_label="VLESS-HTTP2-REALITY" ;;
+                *) scheme="" ;;
+            esac
+        elif [ "$port" -ge 20000 ]; then
+            encoded=$((10#$port - 20000))
+            slot=$((encoded % 10))
+            mmdd=$((encoded / 10))
+            scheme="方案二"
+            case "$slot" in
+                1) expected_label="Hysteria2" ;;
+                2) expected_label="VLESS-REALITY" ;;
+                *) scheme="" ;;
+            esac
+        fi
+
+        if [ -n "$scheme" ]; then
+            month=$((mmdd / 100))
+            day=$((mmdd % 100))
+            case "$month" in
+                1|3|5|7|8|10|12) max_day=31 ;;
+                4|6|9|11) max_day=30 ;;
+                2) max_day=29 ;;
+                *) max_day=0 ;;
+            esac
+            if [ "$day" -lt 1 ] || [ "$day" -gt "$max_day" ] || [ "${label^^}" != "${expected_label^^}" ]; then
+                scheme=""
+            fi
+        fi
+
+        if [ -n "$scheme" ]; then
+            if [ "$scheme" = "方案一" ]; then
+                group_key="1-$mmdd"
+                group_expected["$group_key"]=4
+            else
+                group_key="2-$mmdd"
+                group_expected["$group_key"]=2
+            fi
+            group_slots["${group_key}_$slot"]=1
+            group_counts["$group_key"]=$(( ${group_counts["$group_key"]:-0} + 1 ))
+            if [ -z "${group_seen["$group_key"]:-}" ]; then
+                group_seen["$group_key"]=1
+                group_order+=("$group_key")
+            fi
+        else
+            outside_count=$((outside_count + 1))
+        fi
+
+        node_output="$("$sb_bin" url "$port" </dev/null 2>/dev/null || true)"
+        node_url="$(printf '%s\n' "$node_output" | sed -E $'s/\x1B\[[0-9;?]*[ -\/]*[@-~]//g' | grep -Eo '(tuic|hysteria2|hy2|vless|trojan|vmess|ss|anytls|socks)://[^[:space:]]+' | tail -n 1 || true)"
+
+        node_ports+=("$port")
+        node_labels+=("$label")
+        node_urls+=("$node_url")
+        node_groups+=("$group_key")
+        [ -n "$node_url" ] && all_copy+="$node_url"$'\n'
+        total_count=$((total_count + 1))
+    done
+
+    clear
+    echo "========== 当前 Sing-box 节点 =========="
+    echo
+
+    group_number=0
+    for group_key in "${group_order[@]}"; do
+        group_number=$((group_number + 1))
+        numbered_groups+=("$group_key")
+        scheme="方案一"
+        [ "${group_key%%-*}" = "2" ] && scheme="方案二"
+        mmdd="${group_key#*-}"
+        month=$((10#$mmdd / 100))
+        day=$((10#$mmdd % 100))
+        found="${group_counts["$group_key"]}"
+        expected="${group_expected["$group_key"]}"
+        if [ "$found" -eq "$expected" ]; then
+            printf '[%d] %s · %02d月%02d日（%d/%d）\n' "$group_number" "$scheme" "$month" "$day" "$found" "$expected"
+        else
+            printf '[%d] %s · %02d月%02d日（%d/%d，不完整）\n' "$group_number" "$scheme" "$month" "$day" "$found" "$expected"
+        fi
+
+        j=0
+        for i in "${!node_ports[@]}"; do
+            [ "${node_groups[$i]}" = "$group_key" ] || continue
+            j=$((j + 1))
+            printf '    %d. %-24s %s\n' "$j" "${node_labels[$i]}" "${node_ports[$i]}"
+        done
+
+        if [ "$found" -lt "$expected" ]; then
+            printf '    缺少：'
+            for ((i=1; i<=expected; i++)); do
+                [ -n "${group_slots["${group_key}_$i"]:-}" ] && continue
+                if [ "$scheme" = "方案一" ]; then
+                    case "$i" in
+                        1) expected_label="TUIC" ;;
+                        2) expected_label="Hysteria2" ;;
+                        3) expected_label="VLESS-REALITY" ;;
+                        4) expected_label="VLESS-HTTP2-REALITY" ;;
+                    esac
+                    port=$((40000 + 10#$mmdd * 10 + i))
+                else
+                    case "$i" in
+                        1) expected_label="Hysteria2" ;;
+                        2) expected_label="VLESS-REALITY" ;;
+                    esac
+                    port=$((20000 + 10#$mmdd * 10 + i))
+                fi
+                printf '%s %s  ' "$expected_label" "$port"
+            done
+            echo
+        fi
+        echo
+    done
+
+    echo "方案以外的配置"
+    if [ "$outside_count" -eq 0 ]; then
+        echo "    无"
+    else
+        j=0
+        for i in "${!node_ports[@]}"; do
+            [ "${node_groups[$i]}" = "outside" ] || continue
+            j=$((j + 1))
+            printf '    %d. %-24s %s\n' "$j" "${node_labels[$i]}" "${node_ports[$i]}"
+            [ -n "${node_urls[$i]}" ] && outside_copy+="${node_urls[$i]}"$'\n'
+        done
+    fi
+
+    echo
+    echo "----------------------------------------"
+    echo "方案组数：${#group_order[@]}"
+    echo "方案外：$outside_count 条"
+    echo "节点总数：$total_count 条"
+    echo "========================================"
+
+    if [ "$total_count" -eq 0 ]; then
+        echo -n -e "\n未找到节点配置，请按回车键返回..."
+        read
+        return
+    fi
+
+    while true; do
+        echo
+        echo "[C] 复制全部节点"
+        for i in "${!numbered_groups[@]}"; do
+            group_key="${numbered_groups[$i]}"
+            scheme="方案一"
+            [ "${group_key%%-*}" = "2" ] && scheme="方案二"
+            mmdd="${group_key#*-}"
+            month=$((10#$mmdd / 100))
+            day=$((10#$mmdd % 100))
+            printf '[%d] 复制%s · %02d月%02d日\n' "$((i + 1))" "$scheme" "$month" "$day"
+        done
+        [ "$outside_count" -gt 0 ] && echo "[O] 复制方案外节点"
+        read -p "请选择复制范围，直接回车返回: " group_choice
+        [ -z "$group_choice" ] && return
+
+        copy_data=""
+        case "$group_choice" in
+            [Cc]) copy_data="$all_copy" ;;
+            [Oo]) copy_data="$outside_copy" ;;
+            *)
+                if [[ "$group_choice" =~ ^[0-9]+$ ]] && [ "$group_choice" -ge 1 ] && [ "$group_choice" -le "${#numbered_groups[@]}" ]; then
+                    group_key="${numbered_groups[$((group_choice - 1))]}"
+                    for i in "${!node_ports[@]}"; do
+                        [ "${node_groups[$i]}" = "$group_key" ] || continue
+                        [ -n "${node_urls[$i]}" ] && copy_data+="${node_urls[$i]}"$'\n'
+                    done
+                else
+                    echo -e "${RED}[!] 无效选项。${NC}"
+                    continue
+                fi
+                ;;
+        esac
+        copy_singbox_links "$copy_data"
+    done
+}
+
 function do_batch_add_nodes() {
     local sb_bin choice date_md date_number scheme1_port_base scheme2_port_base
     local scheme_base port_base work_dir label protocol port log_file clean_file url
@@ -374,9 +614,17 @@ function do_batch_add_nodes() {
     printf '    %-24s %s\n' "VLESS-REALITY" "$((scheme2_port_base + 2))"
     echo
     echo "[3] 端口反查"
-    echo "    查询日期、方案和现有节点"
+    echo "    输入端口查询日期、方案和协议"
     echo
-    read -p "请输入 [1-3，回车返回]: " choice
+    echo "[4] 一键查询"
+    echo "    查看全部方案和方案外配置"
+    echo
+    read -p "请输入 [1-4，回车返回]: " choice
+
+    if [ "$choice" = "4" ]; then
+        do_query_singbox_nodes "$sb_bin"
+        return
+    fi
 
     if [ "$choice" = "3" ]; then
         echo
@@ -527,7 +775,7 @@ function do_batch_add_nodes() {
             ;;
         "") return ;;
         *)
-            echo -e "${RED}[!] 请选择 1、2 或 3。${NC}"
+            echo -e "${RED}[!] 请选择 1、2、3 或 4。${NC}"
             sleep 1
             return
             ;;
@@ -615,7 +863,7 @@ while true; do
     echo -e " 网络工具"
     echo -e "  9. 检测 IP 质量"
     echo -e " 10. 安装 Sing-box"
-    echo -e " 11. 创建 Sing-box"
+    echo -e " 11. 管理 Sing-box"
     echo -e " 12. 安装 WARP"
     echo -e ""
     echo -e "  0. 退出"
